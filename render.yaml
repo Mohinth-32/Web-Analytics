@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: web-analytics-backend
+    env: node
+    plan: free
+    branch: main
+    buildCommand: npm ci
+    startCommand: npm start
+    autoDeploy: true
