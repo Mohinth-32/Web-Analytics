@@ -1,23 +1,18 @@
 import dotenv from "dotenv";
 dotenv.config(); // ✅ MUST be first
-import fs from "fs";
 
 import express from "express";
 import cors from "cors";
-import mysql from "mysql2/promise";
+import pg from "pg";
 
-const db = mysql.createPool({
-  host: process.env.DB_HOST,
-  port: Number(process.env.DB_PORT),
-  user: process.env.DB_USER,
-  password: process.env.DB_PASS,
-  database: process.env.DB_NAME,
+const { Pool } = pg;
+
+const db = new Pool({
+  connectionString: process.env.DATABASE_URL,
   ssl: {
-    ca: fs.readFileSync("./ca.pem")
+    rejectUnauthorized: false
   },
-  waitForConnections: true,
-  connectionLimit: 8,
-  queueLimit: 0
+  max: 8
 });
 
 const app = express();
@@ -41,10 +36,10 @@ app.post("/track", async (req, res) => {
       req.headers["x-forwarded-for"]?.split(",")[0] ||
       req.socket.remoteAddress;
 
-    await db.execute(
+    await db.query(
       `INSERT INTO site_visits
        (site, page, referrer, user_agent, ip_address, screen)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+       VALUES ($1, $2, $3, $4, $5, $6)`,
       [site, page, referrer, userAgent, ip, screen]
     );
 
@@ -66,18 +61,18 @@ app.get("/analytics/visits-over-time", async (req, res) => {
         DATE(created_at) as date,
         COUNT(*) as visits
       FROM site_visits
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+      WHERE created_at >= NOW() - INTERVAL '1 day' * $1
     `;
     const params = [parseInt(days)];
     
     if (site) {
-      query += ` AND site = ?`;
+      query += ` AND site = $2`;
       params.push(site);
     }
     
     query += ` GROUP BY DATE(created_at) ORDER BY date ASC`;
     
-    const [rows] = await db.execute(query, params);
+    const { rows } = await db.query(query, params);
     res.json(rows);
   } catch (err) {
     console.error("ANALYTICS ERROR:", err);
@@ -90,12 +85,12 @@ app.get("/analytics/by-site", async (req, res) => {
   try {
     const { days = 30 } = req.query;
     
-    const [rows] = await db.execute(
+    const { rows } = await db.query(
       `SELECT 
         site,
         COUNT(*) as visits
       FROM site_visits
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+      WHERE created_at >= NOW() - INTERVAL '1 day' * $1
       GROUP BY site`,
       [parseInt(days)]
     );
@@ -117,19 +112,21 @@ app.get("/analytics/top-pages", async (req, res) => {
         page,
         COUNT(*) as visits
       FROM site_visits
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+      WHERE created_at >= NOW() - INTERVAL '1 day' * $1
     `;
     const params = [parseInt(days)];
     
     if (site) {
-      query += ` AND site = ?`;
+      query += ` AND site = $2`;
       params.push(site);
     }
     
     const safeLimit = Math.min(Math.max(1, parseInt(limit) || 10), 1000);
-    query += ` GROUP BY page ORDER BY visits DESC LIMIT ${safeLimit}`;
+    const limitParam = site ? '$3' : '$2';
+    query += ` GROUP BY page ORDER BY visits DESC LIMIT ${limitParam}`;
+    params.push(safeLimit);
     
-    const [rows] = await db.execute(query, params);
+    const { rows } = await db.query(query, params);
     res.json(rows);
   } catch (err) {
     console.error("ANALYTICS ERROR:", err);
@@ -146,25 +143,26 @@ app.get("/analytics/visits", async (req, res) => {
       SELECT 
         id, site, page, referrer, user_agent, ip_address, screen, created_at
       FROM site_visits
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+      WHERE created_at >= NOW() - INTERVAL '1 day' * $1
     `;
     const params = [parseInt(days)];
     
     if (site) {
-      query += ` AND site = ?`;
+      query += ` AND site = $${params.length + 1}`;
       params.push(site);
     }
     
     if (page) {
-      query += ` AND page = ?`;
+      query += ` AND page = $${params.length + 1}`;
       params.push(page);
     }
     
     const safeLimit = Math.min(Math.max(1, parseInt(limit) || 100), 1000);
     const safeOffset = Math.max(0, parseInt(offset) || 0);
-    query += ` ORDER BY created_at DESC LIMIT ${safeLimit} OFFSET ${safeOffset}`;
+    query += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    params.push(safeLimit, safeOffset);
     
-    const [rows] = await db.execute(query, params);
+    const { rows } = await db.query(query, params);
     res.json(rows);
   } catch (err) {
     console.error("ANALYTICS ERROR:", err);
@@ -184,16 +182,16 @@ app.get("/analytics/summary", async (req, res) => {
         COUNT(DISTINCT page) as total_pages,
         COUNT(DISTINCT ip_address) as unique_visitors
       FROM site_visits
-      WHERE created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+      WHERE created_at >= NOW() - INTERVAL '1 day' * $1
     `;
     const params = [parseInt(days)];
     
     if (site) {
-      query += ` AND site = ?`;
+      query += ` AND site = $2`;
       params.push(site);
     }
     
-    const [rows] = await db.execute(query, params);
+    const { rows } = await db.query(query, params);
     res.json(rows[0]);
   } catch (err) {
     console.error("ANALYTICS ERROR:", err);
