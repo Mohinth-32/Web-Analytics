@@ -6,15 +6,17 @@ import cors from "cors";
 import pg from "pg";
 
 const { Pool } = pg;
-
+const url = new URL(process.env.DATABASE_URL);
 
 const db = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: {
-    rejectUnauthorized: false
-  },
-  max: 8,
-  family: 4 
+  host: url.hostname,   // 👈 resolved separately
+  port: Number(url.port || 5432),
+  user: url.username,
+  password: url.password,
+  database: url.pathname.slice(1),
+  ssl: { rejectUnauthorized: false },
+  family: 4,
+  max: 8
 });
 
 const app = express();
