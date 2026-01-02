@@ -7,12 +7,14 @@ import pg from "pg";
 
 const { Pool } = pg;
 
+
 const db = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: {
     rejectUnauthorized: false
   },
-  max: 8
+  max: 8,
+  family: 4 
 });
 
 const app = express();
