@@ -104,6 +104,210 @@ app.get("/analytics/by-site", async (req, res) => {
   }
 });
 
+// Get visits by site as SVG spline chart
+app.get("/analytics/by-site/svg", async (req, res) => {
+  try {
+    const { days = 30 } = req.query;
+    
+    const daysInt = parseInt(days);
+    
+    const rows = await db`
+      SELECT 
+        site,
+        COUNT(*) as visits
+      FROM site_visits
+      WHERE created_at >= NOW() - INTERVAL '1 day' * ${daysInt}
+      GROUP BY site
+    `;
+    
+    // Shuffle the data to create non-linear patterns
+    const shuffledRows = [...rows].sort(() => Math.random() - 0.5);
+    
+    // SVG dimensions
+    const width = 900;
+    const height = 420;
+    const paddingLeft = 70;
+    const paddingRight = 60;
+    const paddingTop = 60;
+    const paddingBottom = 60;
+    const chartWidth = width - paddingLeft - paddingRight;
+    const chartHeight = height - paddingTop - paddingBottom;
+    
+    if (shuffledRows.length === 0) {
+      const svg = `
+        <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+          <rect width="${width}" height="${height}" fill="#000000"/>
+          <text x="${width / 2}" y="${height / 2}" 
+                text-anchor="middle" 
+                font-family="Arial, sans-serif" 
+                font-size="16" 
+                fill="#00ff00">
+            No data available
+          </text>
+        </svg>
+      `;
+      res.setHeader('Content-Type', 'image/svg+xml');
+      return res.send(svg);
+    }
+    
+    // Calculate max visits for scaling (always start from 0)
+    const maxVisits = Math.max(...shuffledRows.map(r => Number(r.visits)));
+    const minVisits = 0; // Start from 0
+    const range = maxVisits || 1;
+    
+    // Calculate points for the spline with gap from y-axis
+    const gapFromYAxis = 60; // Gap between y-axis and first point
+    const effectiveChartWidth = chartWidth - gapFromYAxis;
+    
+    const points = shuffledRows.map((row, index) => {
+      const x = paddingLeft + gapFromYAxis + (index / (shuffledRows.length - 1)) * effectiveChartWidth;
+      const normalizedValue = Number(row.visits) / range;
+      const y = height - paddingBottom - normalizedValue * chartHeight;
+      return { x, y, visits: Number(row.visits), site: row.site };
+    });
+    
+    // Create smooth spline path using cubic bezier curves
+    let pathD = `M ${points[0].x} ${points[0].y}`;
+    
+    for (let i = 0; i < points.length - 1; i++) {
+      const current = points[i];
+      const next = points[i + 1];
+      
+      // Calculate control points for smooth curve
+      const controlPointX = current.x + (next.x - current.x) / 2;
+      
+      pathD += ` C ${controlPointX} ${current.y}, ${controlPointX} ${next.y}, ${next.x} ${next.y}`;
+    }
+    
+    // Generate data points and labels
+    const dataPoints = points.map(point => `
+      <circle cx="${point.x}" cy="${point.y}" r="5" fill="#00ff00" stroke="#000000" stroke-width="2"/>
+      <text x="${point.x}" y="${point.y - 15}" 
+            text-anchor="middle" 
+            font-family="Arial, sans-serif" 
+            font-size="12" 
+            fill="#00ff00" 
+            font-weight="bold">
+        ${point.visits}
+      </text>
+    `).join('');
+    
+    // Generate X-axis labels
+    const xLabels = points.map(point => `
+      <text x="${point.x}" 
+            y="${height - paddingBottom + 20}" 
+            text-anchor="middle" 
+            font-family="Arial, sans-serif" 
+            font-size="11" 
+            font-weight="bold"
+            fill="#00ff00"
+            transform="rotate(-15, ${point.x}, ${height - paddingBottom + 20})">
+        ${point.site}
+      </text>
+    `).join('');
+    
+    // Generate Y-axis labels (starting from 0)
+    const yAxisSteps = 5;
+    const yAxisLabels = Array.from({ length: yAxisSteps + 1 }, (_, i) => {
+      const value = Math.round((range / yAxisSteps) * i);
+      const y = height - paddingBottom - (chartHeight / yAxisSteps) * i;
+      return `
+        <text x="${paddingLeft - 10}" 
+              y="${y + 5}" 
+              text-anchor="end" 
+              font-family="Arial, sans-serif" 
+              font-size="11" 
+              fill="#00ff00">
+          ${value}
+        </text>
+        <line x1="${paddingLeft - 5}" 
+              y1="${y}" 
+              x2="${paddingLeft}" 
+              y2="${y}" 
+              stroke="#00ff00" 
+              stroke-width="1" 
+              opacity="0.3"/>
+      `;
+    }).join('');
+    
+    const svg = `
+      <svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}">
+        <!-- Background -->
+        <rect width="${width}" height="${height}" fill="#000000"/>
+        
+        <!-- Title -->
+        <text x="${width / 2}" 
+              y="30" 
+              text-anchor="middle" 
+              font-family="Arial, sans-serif" 
+              font-size="18" 
+              font-weight="bold" 
+              fill="#6cd66cff">
+          Visits by Site (Last ${daysInt} Days)
+        </text>
+        
+        <!-- Y-axis -->
+        <line x1="${paddingLeft}" 
+              y1="${paddingTop}" 
+              x2="${paddingLeft}" 
+              y2="${height - paddingBottom}" 
+              stroke="#00ff00" 
+              stroke-width="2" 
+              opacity="0.5"/>
+        
+        <!-- X-axis -->
+        <line x1="${paddingLeft}" 
+              y1="${height - paddingBottom}" 
+              x2="${width - paddingRight}" 
+              y2="${height - paddingBottom}" 
+              stroke="#00ff00" 
+              stroke-width="2" 
+              opacity="0.5"/>
+        
+        <!-- Y-axis labels -->
+        ${yAxisLabels}
+        
+        <!-- Grid lines -->
+        ${Array.from({ length: yAxisSteps + 1 }, (_, i) => {
+          const y = height - paddingBottom - (chartHeight / yAxisSteps) * i;
+          return `<line x1="${paddingLeft}" y1="${y}" x2="${width - paddingRight}" y2="${y}" stroke="#00ff00" stroke-width="1" opacity="0.1"/>`;
+        }).join('')}
+        
+        <!-- Spline path -->
+        <path d="${pathD}" 
+              fill="none" 
+              stroke="#00ff00" 
+              stroke-width="3" 
+              stroke-linecap="round"
+              filter="url(#glow)"/>
+        
+        <!-- Data points -->
+        ${dataPoints}
+        
+        <!-- X-axis labels -->
+        ${xLabels}
+        
+        <!-- Neon glow effect -->
+        <defs>
+          <filter id="glow">
+            <feGaussianBlur stdDeviation="2" result="coloredBlur"/>
+            <feMerge>
+              <feMergeNode in="coloredBlur"/>
+              <feMergeNode in="SourceGraphic"/>
+            </feMerge>
+          </filter>
+        </defs>
+      </svg>
+    `;
+    
+    res.setHeader('Content-Type', 'image/svg+xml');
+    res.send(svg);
+  } catch (err) {
+    console.error("SVG CHART ERROR:", err);
+    res.status(500).json({ message: "Failed to generate chart" });
+  }
+});
+
 // Get top pages
 app.get("/analytics/top-pages", async (req, res) => {
   try {
